@@ -98,7 +98,7 @@ def whole_data_train(normalized_data, relative_scaler, data_source):
     if is_matrix:
         predictions = get_mp_from_data(predictions, relative_scaler, is_relative=is_relative)
 
-    for i in range(60):
+    for i in range(180):
         predicted_data = predictions[-seq_length:]
         tensor_data = torch.Tensor(np.expand_dims(predicted_data, 0))
         outputs, hidden_states, cell_states = lstm_model(tensor_data, hidden_states, cell_states)

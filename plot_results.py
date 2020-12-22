@@ -4,9 +4,11 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 
 
-type = 'mp'  # loss or prediction or mp
+type = 'prediction'  # loss or prediction or mp
 
-dir = os.path.join('results', 'plots', 'prediction')
+# dir = os.path.join('results')
+dir = os.path.join('results', 'prediction', '6 months')
+
 
 folders = os.listdir(dir)
 items = os.listdir(os.path.join(dir, folders[0]))
@@ -14,7 +16,7 @@ items = os.listdir(os.path.join(dir, folders[0]))
 color_dict = {'results - matrix profile': 'g', 'results - no matrix profile': 'r',
               'results - relative matrix profile': 'b'}
 
-prediction_color_dict = {'matrix profile': 'g', 'no matrix': 'r', 'relative matrix profile': 'b', 'actual data': 'k' }
+prediction_color_dict = {'matrix profile': 'g', 'no matrix': 'r', 'relative matrix profile': 'b', 'actual data': 'k'}
 
 
 def plot_loss():
@@ -53,7 +55,8 @@ def plot_prediction():
         red_patch = mpatches.Patch(color='r', label='no matrix profile')
         blue_patch = mpatches.Patch(color='b', label='relative matrix profile')
         green_patch = mpatches.Patch(color='g', label='matrix profile')
-        plt.legend(handles=[red_patch, blue_patch, green_patch])
+        black_patch = mpatches.Patch(color='k', label='raw observed data')
+        plt.legend(handles=[red_patch, blue_patch, green_patch, black_patch])
         plt.show()
 
 
@@ -74,7 +77,6 @@ def plot_mp():
         blue_patch = mpatches.Patch(color='b', label='predicted relative matrix profile')
         plt.legend(handles=[red_patch, blue_patch])
         plt.show()
-
 
 
 if type == 'loss':
