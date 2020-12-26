@@ -1,11 +1,12 @@
 import numpy as np
 import torch
-from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 import random
 import matplotlib.pyplot as plt
 
+
+from k_fold import RepHoldout
 from data_preprocessing import get_matrix_normalize_data, get_normalize_data, get_mp_from_data, get_new_mp_from_data
 from lstm import LightningModel
 from dataset import ForecastDataset
@@ -16,17 +17,17 @@ seq_length = 12
 seed = 1000
 is_matrix = True
 is_relative = True
+only_mp_features = True
 is_matrix_str = 'matrix' if is_matrix else 'not matrix'
 all_data_sources = [
-    'hospital admission (percentage of new admissions that are covid)',
-    'hospital admission-adj (percentage of new admissions that are covid)','confirmed cases','total confirmed cases',
-    'death cases','total death cases']
+    'hospital admission-adj (percentage of new admissions that are covid)', 'confirmed cases', 'death cases'
+]
 k_fold = False  # if not k fold, then train the whole data and do prediction
 
 
 def k_fold_training(normalized_data):
     # create k fold split = 5
-    k_fold_normalized_data = KFold(n_splits=5).split(normalized_data)
+    k_fold_normalized_data = RepHoldout(n_splits=5).split(normalized_data)
     all_train_loss = []
     all_test_loss = []
 
@@ -40,13 +41,13 @@ def k_fold_training(normalized_data):
         testing_normalized_data = normalized_data[test_index]
 
         # create datasets
-        train_dataset = ForecastDataset(training_normalized_data, seq_length)
-        test_dataset = ForecastDataset(testing_normalized_data, seq_length)
+        train_dataset = ForecastDataset(training_normalized_data, seq_length, only_mp_features=only_mp_features)
+        test_dataset = ForecastDataset(testing_normalized_data, seq_length, only_mp_features=only_mp_features)
         train_data_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=False)
         test_data_loader = DataLoader(test_dataset, batch_size=batch_size, drop_last=False)
 
-        lightningModel = LightningModel(batch_size, seq_length, input_dim=normalized_data.shape[1],
-                                        teacher_forcing=True)
+        lightningModel = LightningModel(batch_size, seq_length, input_dim=train_dataset[0][0].shape[1],
+                                        teacher_forcing=True, loss='mape')
         trainer = pl.Trainer(max_epochs=200)
         trainer.fit(lightningModel, train_data_loader, test_data_loader)
         all_train_loss.append(lightningModel.all_train_loss)
@@ -66,10 +67,10 @@ def whole_data_train(normalized_data, relative_scaler, data_source):
     torch.cuda.manual_seed_all(seed)
 
     # create datasets
-    train_dataset = ForecastDataset(normalized_data, seq_length)
+    train_dataset = ForecastDataset(normalized_data, seq_length, only_mp_features)
     train_data_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=False)
 
-    lightningModel = LightningModel(batch_size, seq_length, input_dim=normalized_data.shape[1],
+    lightningModel = LightningModel(batch_size, seq_length, input_dim=train_dataset[0][0].shape[1],
                                     teacher_forcing=True)
     trainer = pl.Trainer(max_epochs=200)
     trainer.fit(lightningModel, train_data_loader)
@@ -84,7 +85,10 @@ def whole_data_train(normalized_data, relative_scaler, data_source):
     for i in range(0, normalized_data.shape[0] - seq_length):
 
         backward_flow = normalized_data[i:i + seq_length].shape[0] - seq_length
-        tensor_data = torch.Tensor(np.expand_dims(normalized_data[i + backward_flow:i + seq_length], 0))
+        input_data = normalized_data[i + backward_flow:i + seq_length]
+        if only_mp_features:
+            input_data = input_data[:, 1:]
+        tensor_data = torch.Tensor(np.expand_dims(input_data, 0))
         outputs, hidden_states, cell_states = lstm_model(tensor_data,
                                                          hidden_states, cell_states)
 
@@ -100,6 +104,8 @@ def whole_data_train(normalized_data, relative_scaler, data_source):
 
     for i in range(180):
         predicted_data = predictions[-seq_length:]
+        if only_mp_features:
+            predicted_data = predicted_data[:, 1:]
         tensor_data = torch.Tensor(np.expand_dims(predicted_data, 0))
         outputs, hidden_states, cell_states = lstm_model(tensor_data, hidden_states, cell_states)
 
@@ -140,3 +146,10 @@ for data_source in all_data_sources:
     # x-ray are complex but there are specific areas more important than others, pertain to the joints (arthirtis)
     # The ability for AI to locate joints and subsequently score them, identify important findings on bone disease
     # can we create an algorithm that can read and identify joints before they can score them
+
+
+#  TODO: attention mechanism
+### Your way - integrate attention mechanism to the LSTM model since matrix profiling algorithm tells us which point in the value that it is closest against
+### Treat your matrix profile or the position as attention and model the raw observed data.
+### May use other external data as attention, some research mention temperature is a factor, this can be used as attention?
+

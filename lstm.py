@@ -34,7 +34,7 @@ class LSTM(nn.Module):
 
 
 class LightningModel(pl.LightningModule):
-    def __init__(self, batch_size, seq_length, input_dim, teacher_forcing=True):
+    def __init__(self, batch_size, seq_length, input_dim, teacher_forcing=True, loss='rmse'):
         super(LightningModel, self).__init__()
         self.lstm_model = LSTM(batch_size, seq_length=seq_length, input_dim=input_dim)
         self.criterion = nn.MSELoss()
@@ -45,6 +45,13 @@ class LightningModel(pl.LightningModule):
         self.current_test_loss = []
 
         self.teacher_forcing = teacher_forcing
+        self.loss = self.create_loss(loss)
+
+    def create_loss(self, loss):
+        if loss == 'rmse':
+            return lambda predict, target: torch.sqrt(self.criterion(predict, target) + 1e-6)
+        elif loss == 'mape':
+            return lambda predict, target: torch.mean((target - predict).abs() / target.abs())
 
     def forward(self, inputs):
         outputs, hidden_states, cell_states = self.lstm_model(inputs)
@@ -65,7 +72,7 @@ class LightningModel(pl.LightningModule):
                 x[:, :, 0:1] = self.last_outputs[-batch[0].shape[0]:]  # when it's not exactly the batch size
 
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x, self.hidden_states, self.cell_states)
-        loss = torch.sqrt(self.criterion(outputs, y) + 1e-6)  # Root mean squared error
+        loss = self.loss(outputs, y)  # Root mean squared error
 
         self.last_outputs = outputs.detach()
         self.hidden_states = self.hidden_states.detach()
@@ -87,7 +94,7 @@ class LightningModel(pl.LightningModule):
     def validation_step(self, batch, batch_index):
         x, y = batch
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x, self.hidden_states, self.cell_states)
-        loss = torch.sqrt(self.criterion(outputs, y) + 1e-6)
+        loss = self.loss(outputs, y)
 
         self.hidden_states = self.hidden_states.detach()
         self.cell_states = self.cell_states.detach()
@@ -116,7 +123,15 @@ class LSTMAttention(nn.Module):
     def init_memory_bank(self, memories):
         self.memory_bank = memories[-200:]
 
-    def forward(self, inputs, memory, src_mask):
+    def forward(self, inputs, memory, src_mask):  # memory is a longer sequence from more to the past
+        # can try inputs as:
+        # relative matrix
+        # raw
+        # matrix profile
+        #
+        # memory as:
+        # raw
+
         first_encoder_output = self.first_enoder_layer(inputs)
 
         # first from the encoder inputs, second from the matrix profiling to focus on the nearest neighbours
@@ -127,3 +142,4 @@ class LSTMAttention(nn.Module):
 class LightningModelAttention(LightningModel):
     def __init__(self):
         super(LightningModelAttention, self).__init__()
+
