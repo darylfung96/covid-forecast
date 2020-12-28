@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 from k_fold import RepHoldout
 from data_preprocessing import get_matrix_normalize_data, get_normalize_data, get_mp_from_data, get_new_mp_from_data
-from lstm import LightningModel
+from lstm import LightningModel, LightningModelAttention
 from dataset import ForecastDataset
 
 
@@ -16,13 +16,15 @@ batch_size = 8
 seq_length = 12
 seed = 1000
 is_matrix = True
-is_relative = True
-only_mp_features = True
+is_relative = False
+only_mp_features = False
 is_matrix_str = 'matrix' if is_matrix else 'not matrix'
+model_type = 'attention'
 all_data_sources = [
     'hospital admission-adj (percentage of new admissions that are covid)', 'confirmed cases', 'death cases'
 ]
-k_fold = False  # if not k fold, then train the whole data and do prediction
+model_dict = {'lstm': LightningModel, 'attention': LightningModelAttention}
+k_fold = True  # if not k fold, then train the whole data and do prediction
 
 
 def k_fold_training(normalized_data):
@@ -46,8 +48,8 @@ def k_fold_training(normalized_data):
         train_data_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=False)
         test_data_loader = DataLoader(test_dataset, batch_size=batch_size, drop_last=False)
 
-        lightningModel = LightningModel(batch_size, seq_length, input_dim=train_dataset[0][0].shape[1],
-                                        teacher_forcing=True, loss='mape')
+        lightningModel = model_dict[model_type](batch_size, seq_length, input_dim=train_dataset[0][0].shape[1],
+                                        teacher_forcing=True, loss='mape', is_matrix=is_matrix)
         trainer = pl.Trainer(max_epochs=200)
         trainer.fit(lightningModel, train_data_loader, test_data_loader)
         all_train_loss.append(lightningModel.all_train_loss)
@@ -70,7 +72,7 @@ def whole_data_train(normalized_data, relative_scaler, data_source):
     train_dataset = ForecastDataset(normalized_data, seq_length, only_mp_features)
     train_data_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=False)
 
-    lightningModel = LightningModel(batch_size, seq_length, input_dim=train_dataset[0][0].shape[1],
+    lightningModel = model_dict[model_type](batch_size, seq_length, input_dim=train_dataset[0][0].shape[1],
                                     teacher_forcing=True)
     trainer = pl.Trainer(max_epochs=200)
     trainer.fit(lightningModel, train_data_loader)

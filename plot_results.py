@@ -4,7 +4,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 
 
-is_plot = False
+is_plot = True
 type = 'prediction'  # loss or prediction or mp
 
 # dir = os.path.join('results', 'prediction', '6 months')
@@ -16,7 +16,9 @@ type = 'prediction'  # loss or prediction or mp
 # color_dict = {'results - matrix profile': 'g', 'results - no matrix profile': 'r',
 #               'results - relative matrix profile': 'b'}
 #
-# prediction_color_dict = {'matrix profile': 'g', 'no matrix': 'r', 'relative matrix profile': 'b', 'actual data': 'k'}
+prediction_color_dict = {'matrix profile prediction': 'g', 'raw prediction': 'r', 'relative matrix profile prediction': 'b',
+                         'actual data': 'k', 'raw and matrix profile prediction': 'c',
+                         'raw and relative matrix profile prediction': 'm'}
 
 
 def obtain_loss():
@@ -75,9 +77,12 @@ def plot_loss():
 
 
 def plot_prediction():
+    dir = os.path.join('results', 'predictions')
+    folders = os.listdir(dir)
+    items = os.listdir(os.path.join(dir, folders[0]))
     for item in items:
-        plt.title(f'{item} prediction')
-
+        # plt.title(f'{item} prediction')
+        print(item)
         for folder in folders:
             filename = os.path.join(dir, folder, item)
             prediction = np.load(filename)
@@ -88,7 +93,9 @@ def plot_prediction():
         blue_patch = mpatches.Patch(color='b', label='prediction based on relative matrix profile')
         green_patch = mpatches.Patch(color='g', label='prediction based on matrix profile')
         black_patch = mpatches.Patch(color='k', label='raw observed data')
-        plt.legend(handles=[red_patch, blue_patch, green_patch, black_patch])
+        cyan_patch = mpatches.Patch(color='c', label='prediction based on raw and matrix')
+        magenta_patch = mpatches.Patch(color='m', label='prediction based on raw and relative matrix')
+        plt.legend(handles=[red_patch, blue_patch, green_patch, black_patch, cyan_patch, magenta_patch])
         plt.xlabel('days')
         plt.ylabel('values')
         plt.show()
