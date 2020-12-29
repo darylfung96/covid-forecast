@@ -20,6 +20,7 @@ class LSTM(nn.Module):
         self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, dropout=0.2)
         self.output_layer = nn.Linear(hidden_dim, self.output_dim)
         self.num_layers = 1
+        self.device = None
 
     def forward(self, inputs, hidden_state, cell_state):
         inputs = inputs.view(inputs.shape[0], inputs.shape[1], self.input_dim)
@@ -29,8 +30,11 @@ class LSTM(nn.Module):
         return outputs, hidden_state, cell_state
 
     def init_hiddenlstm_state(self):
-        return torch.zeros(self.num_layers, self.seq_length, self.hidden_dim), \
-               torch.zeros(self.num_layers, self.seq_length, self.hidden_dim)
+        if self.device is None:
+            self.device = next(self.lstm.parameters()).device
+
+        return torch.zeros(self.num_layers, self.seq_length, self.hidden_dim).to(self.device), \
+               torch.zeros(self.num_layers, self.seq_length, self.hidden_dim).to(self.device)
 
 
 class LightningModel(pl.LightningModule):
@@ -65,6 +69,9 @@ class LightningModel(pl.LightningModule):
     def training_step(self, batch, batch_index):
         x, y = batch
 
+        x = x.to(self.device)
+        y = y.to(self.device)
+
         if batch_index != 0:
             if self.teacher_forcing:
                 if random.random() > 0.5:
@@ -94,6 +101,10 @@ class LightningModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_index):
         x, y = batch
+
+        x = x.to(self.device)
+        y = y.to(self.device)
+
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x, self.hidden_states, self.cell_states)
         loss = self.loss(outputs, y)
 
@@ -128,13 +139,16 @@ class LSTMAttention(nn.Module):
         self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, dropout=0.2)
         self.output_layer = nn.Linear(hidden_dim, self.output_dim)
         self.num_layers = 1
+        self.device = None
 
         self.first_enoder_layer = nn.TransformerEncoderLayer(hidden_dim, num_heads, ff_dim)
         self.first_decoder_layer = nn.TransformerDecoderLayer(hidden_dim, num_heads, ff_dim)
 
     def init_hiddenlstm_state(self):
-        return torch.zeros(self.num_layers, self.seq_length, self.hidden_dim), \
-               torch.zeros(self.num_layers, self.seq_length, self.hidden_dim)
+        if self.device is None:
+            self.device = next(self.lstm.parameters()).device
+        return torch.zeros(self.num_layers, self.seq_length, self.hidden_dim).to(self.device), \
+               torch.zeros(self.num_layers, self.seq_length, self.hidden_dim).to(self.device)
 
     def init_memory_bank(self, memories):
         self.memory_bank = memories[-self.memory_bank_size:]
@@ -155,15 +169,15 @@ class LSTMAttention(nn.Module):
         #
         # memory as:
         # raw
-
-        self.add_to_memory(memory)
-
         pre_outputs = self.dropout_first_layer(F.relu(self.pre_layer(inputs)))
         lstm_outputs, (hidden_state, cell_state) = self.lstm(pre_outputs, (hidden_state, cell_state))
 
         first_encoder_output = self.first_enoder_layer(lstm_outputs)
 
-        encoded_memory = F.relu(self.memory_pre_layer(self.memory_bank))
+        if self.memory_bank is None:
+            encoded_memory = F.relu(self.memory_pre_layer(memory))
+        else:
+            encoded_memory = F.relu(self.memory_pre_layer(self.memory_bank))
         # first from the encoder inputs, second from the matrix profiling to focus on the nearest neighbours
         decoder_output = self.first_decoder_layer(first_encoder_output, encoded_memory)
         decoder_output = self.output_layer(decoder_output)
@@ -181,6 +195,9 @@ class LightningModelAttention(LightningModel):
     def training_step(self, batch, batch_index):
         x, y = batch
 
+        x = x.to(self.device)
+        y = y.to(self.device)
+
         if batch_index != 0:
             if self.teacher_forcing:
                 if random.random() > 0.5:
@@ -194,6 +211,8 @@ class LightningModelAttention(LightningModel):
         else:
             x_inputs = x
             memory_inputs = x
+
+        self.lstm_model.add_to_memory(memory_inputs)
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x_inputs, memory_inputs, self.hidden_states, self.cell_states)
         loss = self.loss(outputs, y)  # Root mean squared error
 
@@ -208,6 +227,10 @@ class LightningModelAttention(LightningModel):
 
     def validation_step(self, batch, batch_index):
         x, y = batch
+
+        x = x.to(self.device)
+        y = y.to(self.device)
+
         if self.is_matrix:
             x_inputs = x[:, :, 1:]
             memory_inputs = x[:, :, 0:1]

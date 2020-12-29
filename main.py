@@ -15,7 +15,7 @@ from dataset import ForecastDataset
 batch_size = 8
 seq_length = 12
 seed = 1000
-is_matrix = True
+is_matrix = False
 is_relative = False
 only_mp_features = False
 is_matrix_str = 'matrix' if is_matrix else 'not matrix'
