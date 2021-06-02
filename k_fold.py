@@ -9,7 +9,7 @@ class RepHoldout:
 
         for i in range(self.n_splits):
             total_length = data.shape[0]
-            test_size = int(total_length * current_test_percentage / 100)
+            test_size = round(total_length * current_test_percentage / 100)
             train_size = total_length - test_size
             train_index = range(train_size)
             test_index = range(train_size, total_length)

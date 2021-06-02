@@ -5,15 +5,71 @@ from sklearn.preprocessing import StandardScaler
 
 
 def get_normalize_data(data_source):
-    df = pd.read_csv('covid-forecast.csv')
+    df = pd.read_csv('Normalized-covid-forecast-01032021.csv')
     numpy_data = df[data_source].values
+    numpy_data = np.expand_dims(numpy_data, 1).astype(np.float32)
 
-    numpy_data = np.expand_dims(numpy_data, 1)
-    numpy_data = numpy_data.astype(np.float32)
     scaler = StandardScaler()
     normalized_numpy_data = scaler.fit_transform(numpy_data)
 
     return normalized_numpy_data, [data_source], scaler
+
+
+def get_already_normalize_data(data_source):
+    df = pd.read_csv('Normalized-covid-forecast-01032021.csv')
+    numpy_data = df[data_source].values
+    numpy_data = np.expand_dims(numpy_data, 1).astype(np.float32)
+    scaler = None
+
+    return numpy_data, [data_source], scaler
+
+
+def get_matrix_already_normalize_data(data_source, window_size=7, is_relative=False, is_global_pos=False, is_combined=False):
+    normalized_numpy_data, columns, scaler = get_already_normalize_data(data_source)
+
+    matrix_profile, profile_index = stomp(normalized_numpy_data.squeeze(1), window_size)
+
+    # remove the first 6 real value so we can fit the same dimension as the matrix profile
+    sliced_normalized_numpy_data = normalized_numpy_data[window_size - 1:]
+    relative_profile_index = profile_index - range(len(profile_index))
+
+    matrix_scaler = StandardScaler()
+    global_pos_scaler = StandardScaler()
+    relative_scaler = StandardScaler()
+
+    # relative
+    relative_profile_index = np.expand_dims(relative_profile_index, 1)
+    relative_profile_index = relative_scaler.fit_transform(relative_profile_index)
+
+    # global pos
+    profile_index = np.expand_dims(profile_index, 1)
+    profile_index = global_pos_scaler.fit_transform(profile_index)
+
+    # matrix profile
+    matrix_profile = np.expand_dims(matrix_profile, 1)
+    matrix_profile = matrix_scaler.fit_transform(matrix_profile)
+
+    if is_combined:
+        matrix_normalized_numpy_data = np.concatenate([sliced_normalized_numpy_data, matrix_profile,
+                                                       relative_profile_index, profile_index], 1)
+        columns += ['matrix_profile', 'relative_matrix_profile', 'global_matrix_profile']
+        return matrix_normalized_numpy_data, columns, scaler, [matrix_scaler, global_pos_scaler,
+                                                               relative_scaler], relative_profile_index
+
+    if is_relative:
+        matrix_normalized_numpy_data = np.concatenate([sliced_normalized_numpy_data,
+                                                       relative_profile_index], 1)
+        columns += ['relative_matrix_profile']
+    elif is_global_pos:
+
+        matrix_normalized_numpy_data = np.concatenate([sliced_normalized_numpy_data, profile_index], 1)
+        columns += ['global_pos_matrix_profile']
+    else:
+        matrix_normalized_numpy_data = np.concatenate([sliced_normalized_numpy_data, matrix_profile], 1)
+        columns += ['matrix_profile']
+
+    return normalized_numpy_data, matrix_normalized_numpy_data, columns, scaler, [matrix_scaler, global_pos_scaler,
+                                                                                  relative_scaler], relative_profile_index
 
 
 def get_matrix_normalize_data(data_source, window_size=7, is_relative=False, is_global_pos=False, is_combined=False):
@@ -142,7 +198,7 @@ def get_new_mp_from_data(old_data, new_data, scalers, window_size=7, is_relative
 
 
 def get_all_normalize_data():
-    df = pd.read_csv('covid-forecast.csv')
+    df = pd.read_csv('Normalized-covid-forecast-01032021.csv')
     columns = np.array(df.columns[1:])
     values = df.values[:, 1:]
 

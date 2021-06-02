@@ -4,13 +4,15 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 import random
 import os
+import pickle
 import optuna
 import json
 from optuna.integration import PyTorchLightningPruningCallback
 
 
 from k_fold import RepHoldout
-from data_preprocessing import get_matrix_normalize_data, get_normalize_data, get_mp_from_data, get_new_mp_from_data
+# from data_preprocessing import get_matrix_normalize_data, get_normalize_data, get_mp_from_data, get_new_mp_from_data
+from data_preprocessing import get_matrix_already_normalize_data, get_already_normalize_data, get_mp_from_data, get_new_mp_from_data
 from lstm import LightningModel, LightningModelAttention
 from dataset import ForecastDataset, TestingForecastDataset
 
@@ -27,7 +29,7 @@ window_size = 7
 device = 'cpu'
 
 # [raw, raw relative attention, raw matrix attention, raw attention]
-is_matrix_list = [False, False, True, False]
+is_matrix_list = [False, True, True, False]
 is_relative_list = [False, True, False, False]
 is_combined_list = [False, False, False, False]
 is_only_mp_features = [False, False, False, False]
@@ -55,17 +57,21 @@ for i in range(len(is_matrix_list)):
     attention_str = 'attention' if model_type == 'attention' else ''
     raw_str = '' if only_mp_features else 'raw'
 
+    # all_data_sources = [
+    #     'hospital admission-adj (percentage of new admissions that are covid)', 'confirmed cases', 'death cases'
+    # ]
     all_data_sources = [
-        'hospital admission-adj (percentage of new admissions that are covid)', 'confirmed cases', 'death cases'
+        'Normalized.Admission', 'Normalized.Confirmed', 'Normalized.Death'
     ]
     model_dict = {'lstm': LightningModel, 'attention': LightningModelAttention}
     k_fold = False  # if not k fold, then train the whole data and do prediction
+    prediction_only = True
     loss = 'rmse'
 
     model_name = f'{loss} {raw_str} {matrix_str} {attention_str}'
     ### end of setting model name ###
 
-    def make_predictions(data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, current_rep_holdout):
+    def make_predictions(data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, current_rep_holdout):
         lstm_model = lightningModel.lstm_model.to(device)
         lstm_model.eval()
         hidden_states, cell_states = lstm_model.init_hiddenlstm_state()
@@ -112,7 +118,7 @@ for i in range(len(is_matrix_list)):
         if is_matrix:
             predictions, ori_data = get_mp_from_data(predictions, all_other_scalers, window_size=window_size, is_relative=is_relative, is_combined=is_combined)
 
-        for i in range(144):
+        for i in range(152):
             predicted_data = predictions[-seq_length:]
             if only_mp_features:
                 current_predicted_data = predicted_data[:, 1:]
@@ -161,14 +167,17 @@ for i in range(len(is_matrix_list)):
         os.makedirs(current_dir, exist_ok=True)
         # np.save(os.path.join(current_dir, f'{data_source}_actual_data'), scaler.inverse_transform(normalized_data))
 
+        if scaler is not None:
+            predictions = scaler.inverse_transform(predictions)
+
         if current_rep_holdout is None:
-            np.save(os.path.join(current_dir, f'{data_source}'), scaler.inverse_transform(predictions))
+            np.save(os.path.join(current_dir, f'{data_source}'), predictions)
         else:
-            np.save(os.path.join(current_dir, f'{data_source}_holdout_{current_rep_holdout}'), scaler.inverse_transform(predictions))
+            np.save(os.path.join(current_dir, f'{data_source}_holdout_{current_rep_holdout}'), predictions)
 
 
     # objective for hyperparameter optimization
-    def k_fold_training(trial, data_source_normalized_data, normalized_data, scaler, all_other_scalers):
+    def k_fold_training(trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers):
 
         ### trial objective ###
         if type(trial) is not dict:
@@ -203,6 +212,7 @@ for i in range(len(is_matrix_list)):
             training_normalized_data = normalized_data[train_index]
             testing_normalized_data = normalized_data[test_index]
 
+
             # create datasets
             train_dataset = ForecastDataset(training_normalized_data, seq_length, only_mp_features=only_mp_features)
             test_dataset = TestingForecastDataset(testing_normalized_data, seq_length, only_mp_features=only_mp_features)
@@ -227,7 +237,7 @@ for i in range(len(is_matrix_list)):
             all_train_loss.append(lightningModel.all_train_loss)
             all_test_loss.append(lightningModel.all_test_loss)
 
-            make_predictions(data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, current_rep_holdout)
+            make_predictions(data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, current_rep_holdout)
 
         # objective = np.mean(np.min(np.array(all_test_loss), 1))
         # return objective
@@ -236,13 +246,14 @@ for i in range(len(is_matrix_list)):
         current_dir = os.path.join(dir, f'{raw_str} {matrix_str} {attention_str}')
         os.makedirs(current_dir, exist_ok=True)
 
-        all_train_loss = np.array(all_train_loss)
-        np.save(os.path.join(current_dir,f'train_{data_source}'), all_train_loss)
-        all_test_loss = np.array(all_test_loss)
-        np.save(os.path.join(current_dir,f'test_{data_source}'), all_test_loss)
+        with open(os.path.join(current_dir,f'train_{data_source}'), 'wb') as f:
+           pickle.dump(all_train_loss, f, pickle.HIGHEST_PROTOCOL)
+
+        with open(os.path.join(current_dir, f'test_{data_source}'), 'wb') as f:
+            pickle.dump(all_test_loss, f, pickle.HIGHEST_PROTOCOL)
 
 
-    def whole_data_train(trial, data_source_normalized_data, normalized_data, scaler, all_other_scalers):
+    def whole_data_train(trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers):
         np.random.seed(seed)
         torch.manual_seed(seed)
         random.seed(seed)
@@ -273,55 +284,49 @@ for i in range(len(is_matrix_list)):
                                                     dropout=dropout, learning_rate=learning_rate)
         trainer = pl.Trainer(max_epochs=200)
         trainer.fit(lightningModel, train_data_loader)
-        make_predictions(data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, None)
+        make_predictions(data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, None)
 
 
     def main():
         for data_source in all_data_sources:
             if is_matrix:
-                data_source_normalized_data, normalized_data, columns, scaler, all_other_scalers, _ = get_matrix_normalize_data(data_source,
+                data_source_normalized_data, normalized_data, columns, scaler, all_other_scalers, _ = get_matrix_already_normalize_data(data_source,
                                                                                                                                 window_size=window_size,
                                                                                                is_relative=is_relative,
                                                                                                  is_combined=is_combined)
             else:
-                normalized_data, columns, scaler = get_normalize_data(data_source)
+                normalized_data, columns, scaler = get_already_normalize_data(data_source)
                 all_other_scalers = None
-                data_source_normalized_data = None
+                data_source_normalized_data = normalized_data
 
-                # save actual data
-                # actual_data = scaler.inverse_transform(normalized_data)
-                # np.save(f'results/predictions/actual data/{data_source}', actual_data)
-                # continue
-
+            trial = {'dropout': 0.2, 'hidden_dim': 8, 'ff_dim': 8, 'learning_rate': 0.0004, 'weight_decay': 1e-5}
             if k_fold:
-                # objective = lambda trial: k_fold_training(trial, normalized_data, scaler, all_other_scalers)
-                # study = optuna.create_study(direction='maximize')
-                # study.optimize(objective, n_trials=100)
-
-                trial = {'dropout': 0.2, 'hidden_dim': 8, 'ff_dim': 8, 'learning_rate': 0.0004, 'weight_decay': 1e-5}
                 # trial = {'dropout': 0.045, 'hidden_dim': 64, 'ff_dim': 80, 'learning_rate': 0.001, 'weight_decay': 0.001}
 
-                k_fold_training(trial, data_source_normalized_data, normalized_data, scaler, all_other_scalers)
+                k_fold_training(trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers)
 
-                # # get best trial #
-                # print('=============================')
-                # print(f'datasource: {data_source}')
-                # print("Number of finished trials: {}".format(len(study.trials)))
-                # print("Best trial:")
-                # trial = study.best_trial
-                # print("  Value: {}".format(trial.value))
-                # print("  Params: ")
-                # for key, value in trial.params.items():
-                #     print("    {}: {}".format(key, value))
-                # json.dump(trial.params, open(f'{data_source}.json', 'w'))
-                # print('=============================')
+            elif prediction_only:
+                get_new_mp_from_data_func = lambda predictions, next_prediction: get_new_mp_from_data(predictions,
+                                                                                                      next_prediction,
+                                                                                                      all_other_scalers,
+                                                                                                      window_size=window_size,
+                                                                                                      is_relative=is_relative,
+                                                                                                      is_combined=is_combined)
 
+                dataset = ForecastDataset(normalized_data, seq_length, only_mp_features=only_mp_features)
+                for current_rep_holdout in range(1, 6):
+                    current_model_name = f'{model_name}/{data_source}_holdout_{current_rep_holdout}'
 
-                # end of get best trial
-
-                # k_fold_training(normalized_data, scaler, all_other_scalers)
+                    lightningModel = model_dict[model_type](normalized_data, get_new_mp_from_data_func, scaler,
+                                                            batch_size, seq_length, input_dim=dataset[0][0].shape[1],
+                                                            teacher_forcing=True, loss=loss, is_matrix=is_matrix,
+                                                            only_mp_features=only_mp_features,
+                                                            model_name=current_model_name,
+                                                            hidden_dim=trial['hidden_dim'], ff_dim=trial['ff_dim'], weight_decay=trial['weight_decay'],
+                                                            dropout=trial['dropout'], learning_rate=trial['learning_rate'])
+                    lightningModel.load(current_model_name)
+                    make_predictions(data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, current_rep_holdout)
             else:
-                trial = {'dropout': 0.2, 'hidden_dim': 8, 'ff_dim': 8, 'learning_rate': 0.0004, 'weight_decay': 1e-5}
-                whole_data_train(trial, data_source_normalized_data, normalized_data, scaler, all_other_scalers)
+                whole_data_train(trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers)
 
     main()

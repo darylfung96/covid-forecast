@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import pandas as pd
+import pickle
 
 
 is_plot = False
@@ -42,17 +43,22 @@ def obtain_loss():
                 if 'test' not in item:
                     continue
 
-                loss = np.load(os.path.join(type_dir, item))
+                with open(os.path.join(type_dir, item), 'rb') as f:
+                    loss = pickle.load(f)
                 print(f'{loss_type}---{type}---{item}')
                 mean_loss = []
-                for idx, current_loss in enumerate(np.min(loss, 1).tolist()):
-                    rounded_up_loss = round(current_loss, 3)
-                    mean_loss.append(rounded_up_loss)
-                    # print(f'Rep-Holdout {idx}: {rounded_up_loss}')
-                    print(f'{rounded_up_loss}')
-                print(f'{round(sum(mean_loss)/len(mean_loss), 3)}')
-                print()
-                print()
+
+                for key in loss.keys():
+                    type_loss = loss[key]
+                    for idx, current_loss in enumerate(np.min(type_loss, 1).tolist()):
+                        rounded_up_loss = round(current_loss, 3)
+                        mean_loss.append(rounded_up_loss)
+                        # print(f'Rep-Holdout {idx}: {rounded_up_loss}')
+                        print(f'loss type: {type_loss}')
+                        print(f'{rounded_up_loss}')
+                    print(f'{round(sum(mean_loss)/len(mean_loss), 3)}')
+                    print()
+                    print()
 
 
 def obtain_prediction():
@@ -64,28 +70,47 @@ def obtain_prediction():
         # if folder not in focused_prediction_plots:
         #     continue
 
-        df_dict = {'Date': pd.date_range(start="2020-03-01", end="2021-05-31")}
-        for item in ['confirmed cases.npy', 'death cases.npy',
-                 'hospital admission-adj (percentage of new admissions that are covid).npy']:
-            filename = os.path.join(dir, folder, item)
+        df_dict = {'Date': pd.date_range(start="2020-03-01", end="2021-07-31")}
+        # for item in ['confirmed cases.npy', 'death cases.npy',
+        #          'hospital admission-adj (percentage of new admissions that are covid).npy']:
+        for item in ['Normalized.Admission_holdout', 'Normalized.Confirmed_holdout', 'Normalized.Death_holdout']:
+            for i in range(1, 6):
+                nname = f'{item}_{i}'
+                filename = os.path.join(dir, folder, f'{nname}.npy')
 
-            if not os.path.exists(filename):
-                continue
-            prediction = np.load(filename)[:, 0]
+                # if not os.path.exists(filename):
+                #     continue
+                prediction = np.load(filename)[:, 0]
 
-            if 'confirmed' in item.lower():
-                nname = 'Confirmed.cases'
-            elif 'death' in item.lower():
-                nname = 'Death.cases'
-            else:
-                nname = 'Admission.cases'
+                # if 'confirmed' in item.lower():
+                #     nname = 'Confirmed.cases'
+                # elif 'death' in item.lower():
+                #     nname = 'Death.cases'
+                # else:
+                #     nname = 'Admission.cases'
 
-            length = df_dict['Date'].shape[0]
-            curr_length = prediction.shape[0]
-            if length - curr_length > 0:
-                prediction = np.concatenate([prediction, prediction[-(length-curr_length):]])
+                length = df_dict['Date'].shape[0]
+                curr_length = prediction.shape[0]
+                if length - curr_length > 0:
+                    prediction = np.concatenate([prediction, prediction[-(length-curr_length):]])
+                elif length - curr_length < 0:
+                    prediction = prediction[:length]
 
-            df_dict[nname] = prediction
+                df_dict[nname] = prediction
+
+            # get the average
+            average_value = None
+            num = 0
+            for i in range(1, 6):
+                current_key = f'{item}_{i}'
+
+                if average_value is None:
+                    average_value = df_dict[current_key]
+                else:
+                    average_value += df_dict[current_key]
+                num += 1
+            average_value /= num
+            df_dict[f'{item}_average'] = average_value
 
         df = pd.DataFrame(df_dict)
 
@@ -93,12 +118,6 @@ def obtain_prediction():
         os.makedirs(save_dir, exist_ok=True)
         save_filename = os.path.join(save_dir, f'{folder}.csv')
         df.to_csv(save_filename, index=False)
-
-
-
-
-
-
 
 
 

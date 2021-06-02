@@ -59,31 +59,45 @@ class LightningModel(pl.LightningModule):
         self.linear_decay = 0.5
         self.epsilon = 0.000
 
-        self.all_train_loss = []
-        self.current_train_loss = []
-        self.all_test_loss = []
-        self.current_test_loss = []
+        self.all_train_loss = {'rmse': [], 'mae': [], 'mape': []}
+        self.current_train_loss = {'rmse': [], 'mae': [], 'mape': []}
+        self.all_test_loss = {'rmse': [], 'mae': [], 'mape': []}
+        self.current_test_loss = {'rmse': [], 'mae': [], 'mape': []}
         self.validation_input = None
 
         self.teacher_forcing = teacher_forcing
         self.loss = self.create_loss(loss)
+        self.losses = {'rmse': self.create_loss('rmse'),
+                       'mae': self.create_loss('mae'),
+                       'mape': self.create_loss('mape')}
         self.best_loss = 1e9
 
         self.save_filename = os.path.join('models', f'{self.model_name}.ckpt')
         os.makedirs(os.path.dirname(self.save_filename), exist_ok=True)
+
+    def load(self, model_ckpt_filename):
+        loaded_state_dict = torch.load(f'models/{model_ckpt_filename}.ckpt')
+        self.lstm_model.load_state_dict(loaded_state_dict)
+        print('successfully loaded model')
 
     def create_loss(self, loss):
         if loss == 'rmse':
             return lambda predict, target: torch.sqrt(self.criterion(predict, target) + 1e-6)
         elif loss == 'mape':
             return lambda predict, target: torch.mean((target - predict).abs() / target.abs())
+        elif loss == 'mae':
+            loss_fn = nn.L1Loss()
+            return loss_fn
 
     def forward(self, inputs):
         outputs, hidden_states, cell_states = self.lstm_model(inputs)
         return outputs,hidden_states, cell_states
 
     def on_train_epoch_start(self):
-        self.current_train_loss = []
+        self.current_train_loss['rmse'] = []
+        self.current_train_loss['mae'] = []
+        self.current_train_loss['mape'] = []
+
         self.hidden_states, self.cell_states = self.lstm_model.init_hiddenlstm_state()
         self.lstm_model.train()
 
@@ -103,20 +117,34 @@ class LightningModel(pl.LightningModule):
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x, self.hidden_states, self.cell_states)
         loss = self.loss(outputs, y)  # Root mean squared error
 
+        # get losses for logging
+        rmse_loss = self.losses['rmse'](outputs, y)
+        mae_loss = self.losses['mae'](outputs, y)
+        mape_loss = self.losses['mape'](outputs, y)
+
         self.last_outputs = outputs.detach()
         self.hidden_states = self.hidden_states.detach()
         self.cell_states = self.cell_states.detach()
 
         self.log('train_loss', loss.item(), prog_bar=True)
-        self.current_train_loss.append(loss.item())
+
+        # append the training losses
+        self.current_train_loss['rmse'].append(rmse_loss.item())
+        self.current_train_loss['mae'].append(mae_loss.item())
+        self.current_train_loss['mape'].append(mape_loss.item())
 
         return loss
 
     def on_train_epoch_end(self, *args):
-        self.all_train_loss.append(sum(self.current_train_loss) / len(self.current_train_loss))
+        self.all_train_loss['rmse'].append(sum(self.current_train_loss['rmse']) / len(self.current_train_loss['rmse']))
+        self.all_train_loss['mae'].append(sum(self.current_train_loss['mae']) / len(self.current_train_loss['mae']))
+        self.all_train_loss['mape'].append(sum(self.current_train_loss['mape']) / len(self.current_train_loss['mape']))
 
     def on_validation_epoch_start(self):
-        self.current_test_loss = []
+        self.current_test_loss['rmse'] = []
+        self.current_test_loss['mae'] = []
+        self.current_test_loss['mape'] = []
+
         self.hidden_states, self.cell_states = self.lstm_model.init_hiddenlstm_state()
         self.lstm_model.eval()
         self.validation_input = self.training_normalized_data[-2*self.seq_length:]
@@ -130,26 +158,54 @@ class LightningModel(pl.LightningModule):
         y = y.to(self.device)
 
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x, self.hidden_states, self.cell_states)
-        loss = self.loss(outputs[:, -1:, :], y)
+        rmse_loss = self.losses['rmse'](outputs[:, -1:, :], y)
+        mae_loss = self.losses['mae'](outputs[:, -1:, :], y)
+        mape_loss = self.losses['mape'](outputs[:, -1:, :], y)
 
         if self.is_matrix:
             self.validation_input = self.get_new_mp_from_data_func(self.validation_input, outputs.cpu().detach().numpy()[0, -1:])
 
-        scaled_outputs = torch.Tensor(self.scaler.inverse_transform(outputs.cpu()))
-        scaled_y = torch.Tensor(self.scaler.inverse_transform(y.cpu()))
-        scaled_loss = self.loss(scaled_outputs[:, -1:, :], scaled_y)
+        if self.scaler is not None:
+            scaled_outputs = torch.Tensor(self.scaler.inverse_transform(outputs.cpu()))
+            scaled_y = torch.Tensor(self.scaler.inverse_transform(y.cpu()))
+            scaled_rmse_loss = self.losses['rmse'](scaled_outputs[:, -1:, :], scaled_y)
+            scaled_mae_loss = self.losses['mae'](scaled_outputs[:, -1:, :], scaled_y)
+            scaled_mape_loss = self.losses['mape'](scaled_outputs[:, -1:, :], scaled_y)
 
         self.hidden_states = self.hidden_states.detach()
         self.cell_states = self.cell_states.detach()
 
-        self.log('test_loss', loss.item(), prog_bar=True)
-        self.current_test_loss.append(scaled_loss.item())
-        self.log('scaled_test_loss', scaled_loss.item(), prog_bar=True)
+        self.log('rmse_test_loss', rmse_loss.item(), prog_bar=True)
+        self.log('mae_test_loss', mae_loss.item(), prog_bar=True)
+        self.log('mape_test_loss', mape_loss.item(), prog_bar=True)
+
+        if self.scaler is not None:
+            self.current_test_loss['rmse'].append(scaled_rmse_loss.item())
+            self.current_test_loss['mae'].append(scaled_mae_loss.item())
+            self.current_test_loss['mape'].append(scaled_mape_loss.item())
+
+            self.log('scaled_rmse_test_loss', scaled_rmse_loss.item(), prog_bar=True)
+            self.log('scaled_mae_test_loss', scaled_mae_loss.item(), prog_bar=True)
+            self.log('scaled_mape_test_loss', scaled_mape_loss.item(), prog_bar=True)
+        else:
+            self.current_test_loss['rmse'].append(rmse_loss.item())
+            self.current_test_loss['mae'].append(mae_loss.item())
+            self.current_test_loss['mape'].append(mape_loss.item())
+
+            self.log('rmse_test_loss', rmse_loss.item(), prog_bar=True)
+            self.log('mae_test_loss', mae_loss.item(), prog_bar=True)
+            self.log('mape_test_loss', mape_loss.item(), prog_bar=True)
 
     def on_validation_epoch_end(self):
-        mean_test_loss = sum(self.current_test_loss) / len(self.current_test_loss)
-        self.all_test_loss.append(mean_test_loss)
-        if self.all_test_loss[-1] < self.best_loss:
+        mean_rmse_test_loss = sum(self.current_test_loss['rmse']) / len(self.current_test_loss['rmse'])
+        mean_mae_test_loss = sum(self.current_test_loss['mae']) / len(self.current_test_loss['mae'])
+        mean_mape_test_loss = sum(self.current_test_loss['mape']) / len(self.current_test_loss['mape'])
+
+        self.all_test_loss['rmse'].append(mean_rmse_test_loss)
+        self.all_test_loss['mae'].append(mean_mae_test_loss)
+        self.all_test_loss['mape'].append(mean_mape_test_loss)
+
+        if self.all_test_loss['rmse'][-1] < self.best_loss:
             torch.save(self.lstm_model.state_dict(), os.path.join('models', f'{self.model_name}.ckpt'))
 
     def configure_optimizers(self):
@@ -262,12 +318,22 @@ class LightningModelAttention(LightningModel):
                                                                         self.cell_states)
         loss = self.loss(outputs, y)  # Root mean squared error
 
+        # get losses for logging
+        rmse_loss = self.losses['rmse'](outputs, y)
+        mae_loss = self.losses['mae'](outputs, y)
+        mape_loss = self.losses['mape'](outputs, y)
+
+
         self.last_outputs = outputs.detach()
         self.hidden_states = self.hidden_states.detach()
         self.cell_states = self.cell_states.detach()
 
         self.log('train_loss', loss.item(), prog_bar=True)
-        self.current_train_loss.append(loss.item())
+
+        # append the training losses
+        self.current_train_loss['rmse'].append(rmse_loss.item())
+        self.current_train_loss['mae'].append(mae_loss.item())
+        self.current_train_loss['mape'].append(mape_loss.item())
 
         return loss
 
@@ -291,20 +357,39 @@ class LightningModelAttention(LightningModel):
 
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x_inputs, memory_inputs, self.hidden_states,
                                                                         self.cell_states)
-
-        loss = self.loss(outputs[:, -1:, :], y)
+        rmse_loss = self.losses['rmse'](outputs[:, -1:, :], y)
+        mae_loss = self.losses['mae'](outputs[:, -1:, :], y)
+        mape_loss = self.losses['mape'](outputs[:, -1:, :], y)
 
         if self.is_matrix:
-            self.validation_input = self.get_new_mp_from_data_func(self.validation_input, outputs.cpu().detach().numpy()[0, -1:])
+            self.validation_input = self.get_new_mp_from_data_func(self.validation_input,
+                                                                   outputs.cpu().detach().numpy()[0, -1:])
 
-        scaled_outputs = torch.Tensor(self.scaler.inverse_transform(outputs.cpu()))
-        scaled_y = torch.Tensor(self.scaler.inverse_transform(y.cpu()))
-        scaled_loss = self.loss(scaled_outputs[:, -1:, :], scaled_y)
+
+        if self.scaler is not None:
+            scaled_outputs = torch.Tensor(self.scaler.inverse_transform(outputs.cpu()))
+            scaled_y = torch.Tensor(self.scaler.inverse_transform(y.cpu()))
+            scaled_rmse_loss = self.losses['rmse'](scaled_outputs[:, -1:, :], scaled_y)
+            scaled_mae_loss = self.losses['mae'](scaled_outputs[:, -1:, :], scaled_y)
+            scaled_mape_loss = self.losses['mape'](scaled_outputs[:, -1:, :], scaled_y)
 
         self.hidden_states = self.hidden_states.detach()
         self.cell_states = self.cell_states.detach()
 
-        self.log('test_loss', loss.item(), prog_bar=True)
-        self.current_test_loss.append(scaled_loss.item())
-        self.log('scaled_test_loss', scaled_loss.item(), prog_bar=True)
+        if self.scaler is not None:
+            self.current_test_loss['rmse'].append(scaled_rmse_loss.item())
+            self.current_test_loss['mae'].append(scaled_mae_loss.item())
+            self.current_test_loss['mape'].append(scaled_mape_loss.item())
+
+            self.log('scaled_rmse_test_loss', scaled_rmse_loss.item(), prog_bar=True)
+            self.log('scaled_mae_test_loss', scaled_mae_loss.item(), prog_bar=True)
+            self.log('scaled_mape_test_loss', scaled_mape_loss.item(), prog_bar=True)
+        else:
+            self.current_test_loss['rmse'].append(rmse_loss.item())
+            self.current_test_loss['mae'].append(mae_loss.item())
+            self.current_test_loss['mape'].append(mape_loss.item())
+
+            self.log('rmse_test_loss', rmse_loss.item(), prog_bar=True)
+            self.log('mae_test_loss', mae_loss.item(), prog_bar=True)
+            self.log('mape_test_loss', mape_loss.item(), prog_bar=True)
 
