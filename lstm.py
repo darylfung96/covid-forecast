@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 
 
 class LSTM(nn.Module):
-    def __init__(self, batch_size=12, seq_length=5, input_dim=6, hidden_dim=8, output_dim=1):
+    def __init__(self, batch_size=12, seq_length=5, input_dim=6, hidden_dim=8, output_dim=1, dropout=0.2):
         super(LSTM, self).__init__()
 
         self.hidden_dim = hidden_dim
@@ -18,8 +18,8 @@ class LSTM(nn.Module):
         self.output_dim = output_dim
 
         self.first_layer = nn.Linear(input_dim, hidden_dim)
-        self.dropout_first_layer = nn.Dropout(0.2)
-        self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, dropout=0.2)
+        self.dropout_first_layer = nn.Dropout(dropout)
+        self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, dropout=dropout)
         self.output_layer = nn.Linear(hidden_dim, self.output_dim)
         self.num_layers = 1
         self.device = None
@@ -39,12 +39,18 @@ class LSTM(nn.Module):
                torch.zeros(self.num_layers, self.seq_length, self.hidden_dim).to(self.device)
 
 
+default_config = {'hidden_dim': 64, 'ff_dim': 64, 'dropout': 0.2}
+
+
 class LightningModel(pl.LightningModule):
-    def __init__(self, training_normalized_data, get_new_mp_from_data_func, scaler, batch_size, seq_length, input_dim, teacher_forcing=True, loss='rmse', is_matrix=False,
-                 only_mp_features=None, model_name='', weight_decay=1e-2, hidden_dim=64, ff_dim=64, dropout=0.2, learning_rate=1e-3):
+    def __init__(self, training_normalized_data, get_new_mp_from_data_func, scaler, batch_size, seq_length, input_dim,
+                 teacher_forcing=True, loss='rmse', is_matrix=False,
+                 only_mp_features=None, model_name='', weight_decay=1e-2,
+                 learning_rate=1e-3, config=default_config):
         super(LightningModel, self).__init__()
         self.training_normalized_data  = training_normalized_data
-        self.lstm_model = LSTM(batch_size, seq_length=seq_length, input_dim=input_dim, hidden_dim=hidden_dim)
+        self.lstm_model = LSTM(batch_size, seq_length=seq_length, input_dim=input_dim,
+                               hidden_dim=config['hidden_dim'], dropout=config['dropout'])
         self.criterion = nn.MSELoss()
         self.is_matrix = is_matrix
         self.scaler = scaler
@@ -53,8 +59,8 @@ class LightningModel(pl.LightningModule):
         self.model_name = model_name
         self.weight_decay = weight_decay
         self.learning_rate = learning_rate
-        self.hidden_dim=hidden_dim
-        self.dropout = dropout
+        self.hidden_dim=config['hidden_dim']
+        self.dropout = config['dropout']
         self.get_new_mp_from_data_func = get_new_mp_from_data_func
         self.linear_decay = 0.5
         self.epsilon = 0.000
@@ -62,7 +68,6 @@ class LightningModel(pl.LightningModule):
         self.all_train_loss = {'rmse': [], 'mae': [], 'mape': []}
         self.current_train_loss = {'rmse': [], 'mae': [], 'mape': []}
         self.all_test_loss = {'rmse': [], 'mae': [], 'mape': []}
-        self.current_test_loss = {'rmse': [], 'mae': [], 'mape': []}
         self.validation_input = None
 
         self.teacher_forcing = teacher_forcing
@@ -71,6 +76,7 @@ class LightningModel(pl.LightningModule):
                        'mae': self.create_loss('mae'),
                        'mape': self.create_loss('mape')}
         self.best_loss = 1e9
+        self.best_state_dict = None
 
         self.save_filename = os.path.join('models', f'{self.model_name}.ckpt')
         os.makedirs(os.path.dirname(self.save_filename), exist_ok=True)
@@ -80,18 +86,21 @@ class LightningModel(pl.LightningModule):
         self.lstm_model.load_state_dict(loaded_state_dict)
         print('successfully loaded model')
 
+    def load_best_state_dict(self):
+        self.lstm_model.load_state_dict(self.best_state_dict)
+
     def create_loss(self, loss):
         if loss == 'rmse':
             return lambda predict, target: torch.sqrt(self.criterion(predict, target) + 1e-6)
         elif loss == 'mape':
             return lambda predict, target: torch.mean((target - predict).abs() / target.abs())
         elif loss == 'mae':
-            loss_fn = nn.L1Loss()
-            return loss_fn
+            loss = nn.L1Loss()
+            return loss
 
     def forward(self, inputs):
         outputs, hidden_states, cell_states = self.lstm_model(inputs)
-        return outputs,hidden_states, cell_states
+        return outputs, hidden_states, cell_states
 
     def on_train_epoch_start(self):
         self.current_train_loss['rmse'] = []
@@ -141,13 +150,12 @@ class LightningModel(pl.LightningModule):
         self.all_train_loss['mape'].append(sum(self.current_train_loss['mape']) / len(self.current_train_loss['mape']))
 
     def on_validation_epoch_start(self):
-        self.current_test_loss['rmse'] = []
-        self.current_test_loss['mae'] = []
-        self.current_test_loss['mape'] = []
-
         self.hidden_states, self.cell_states = self.lstm_model.init_hiddenlstm_state()
         self.lstm_model.eval()
         self.validation_input = self.training_normalized_data[-2*self.seq_length:]
+
+        self.validation_outputs = None
+        self.Ys = None
 
     def validation_step(self, batch, batch_index):
         x, y = batch
@@ -158,59 +166,93 @@ class LightningModel(pl.LightningModule):
         y = y.to(self.device)
 
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x, self.hidden_states, self.cell_states)
-        rmse_loss = self.losses['rmse'](outputs[:, -1:, :], y)
-        mae_loss = self.losses['mae'](outputs[:, -1:, :], y)
-        mape_loss = self.losses['mape'](outputs[:, -1:, :], y)
+
+        if self.validation_outputs is None:
+            self.validation_outputs = outputs[:, -1, :]
+            self.Ys = y[:, -1, :]
+        else:
+            self.validation_outputs = torch.cat([self.validation_outputs, outputs[:, -1, :]], 0)
+            self.Ys = torch.cat([self.Ys, y[:, -1, :]], 0)
 
         if self.is_matrix:
             self.validation_input = self.get_new_mp_from_data_func(self.validation_input, outputs.cpu().detach().numpy()[0, -1:])
 
-        if self.scaler is not None:
-            scaled_outputs = torch.Tensor(self.scaler.inverse_transform(outputs.cpu()))
-            scaled_y = torch.Tensor(self.scaler.inverse_transform(y.cpu()))
-            scaled_rmse_loss = self.losses['rmse'](scaled_outputs[:, -1:, :], scaled_y)
-            scaled_mae_loss = self.losses['mae'](scaled_outputs[:, -1:, :], scaled_y)
-            scaled_mape_loss = self.losses['mape'](scaled_outputs[:, -1:, :], scaled_y)
+        rmse_loss = self.losses['rmse'](outputs[:, -1, :], y[:, -1, :])
+        self.log('rmse_test_loss', rmse_loss, on_epoch=True)
 
         self.hidden_states = self.hidden_states.detach()
         self.cell_states = self.cell_states.detach()
 
-        self.log('rmse_test_loss', rmse_loss.item(), prog_bar=True)
-        self.log('mae_test_loss', mae_loss.item(), prog_bar=True)
-        self.log('mape_test_loss', mape_loss.item(), prog_bar=True)
+    def on_validation_epoch_end(self):
+        rmse_loss = self.losses['rmse'](self.validation_outputs, self.Ys)
+        mae_loss = self.losses['mae'](self.validation_outputs, self.Ys)
+        mape_loss = self.losses['mape'](self.validation_outputs, self.Ys)
 
         if self.scaler is not None:
-            self.current_test_loss['rmse'].append(scaled_rmse_loss.item())
-            self.current_test_loss['mae'].append(scaled_mae_loss.item())
-            self.current_test_loss['mape'].append(scaled_mape_loss.item())
+            scaled_outputs = torch.Tensor(self.scaler.inverse_transform(self.validation_outputs.cpu()))
+            scaled_y = torch.Tensor(self.scaler.inverse_transform(self.Ys.cpu()))
+            scaled_rmse_loss = self.losses['rmse'](scaled_outputs, scaled_y)
+            scaled_mae_loss = self.losses['mae'](scaled_outputs, scaled_y)
+            scaled_mape_loss = self.losses['mape'](scaled_outputs, scaled_y)
 
-            self.log('scaled_rmse_test_loss', scaled_rmse_loss.item(), prog_bar=True)
-            self.log('scaled_mae_test_loss', scaled_mae_loss.item(), prog_bar=True)
-            self.log('scaled_mape_test_loss', scaled_mape_loss.item(), prog_bar=True)
+            # self.log('scaled_rmse_test_loss', scaled_rmse_loss.item(), prog_bar=True)
+            # self.log('scaled_mae_test_loss', scaled_mae_loss.item(), prog_bar=True)
+            # self.log('scaled_mape_test_loss', scaled_mape_loss.item(), prog_bar=True)
+            self.all_test_loss['rmse'].append(scaled_rmse_loss.item())
+            self.all_test_loss['mae'].append(scaled_mae_loss.item())
+            self.all_test_loss['mape'].append(scaled_mape_loss.item())
         else:
-            self.current_test_loss['rmse'].append(rmse_loss.item())
-            self.current_test_loss['mae'].append(mae_loss.item())
-            self.current_test_loss['mape'].append(mape_loss.item())
-
-            self.log('rmse_test_loss', rmse_loss.item(), prog_bar=True)
-            self.log('mae_test_loss', mae_loss.item(), prog_bar=True)
-            self.log('mape_test_loss', mape_loss.item(), prog_bar=True)
-
-    def on_validation_epoch_end(self):
-        mean_rmse_test_loss = sum(self.current_test_loss['rmse']) / len(self.current_test_loss['rmse'])
-        mean_mae_test_loss = sum(self.current_test_loss['mae']) / len(self.current_test_loss['mae'])
-        mean_mape_test_loss = sum(self.current_test_loss['mape']) / len(self.current_test_loss['mape'])
-
-        self.all_test_loss['rmse'].append(mean_rmse_test_loss)
-        self.all_test_loss['mae'].append(mean_mae_test_loss)
-        self.all_test_loss['mape'].append(mean_mape_test_loss)
+            # self.log('rmse_test_loss', rmse_loss.item(), prog_bar=True)
+            # self.log('mae_test_loss', mae_loss.item(), prog_bar=True)
+            # self.log('mape_test_loss', mape_loss.item(), prog_bar=True)
+            self.all_test_loss['rmse'].append(rmse_loss.item())
+            self.all_test_loss['mae'].append(mae_loss.item())
+            self.all_test_loss['mape'].append(mape_loss.item())
 
         if self.all_test_loss['rmse'][-1] < self.best_loss:
             torch.save(self.lstm_model.state_dict(), os.path.join('models', f'{self.model_name}.ckpt'))
+            self.best_state_dict = self.lstm_model.state_dict()
+
+        self.validation_outputs = None
+        self.Ys = None
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
         return optimizer
+
+
+class CNNLSTM(LSTM):
+    def __init__(self, batch_size=12, seq_length=5, input_dim=6, hidden_dim=8, dropout=0.2, output_dim=1):
+        super(CNNLSTM, self).__init__(batch_size, seq_length, input_dim, hidden_dim, output_dim)
+        self.conv1 = nn.Conv1d(input_dim, hidden_dim, 2)
+        self.bn1 = nn.BatchNorm1d(hidden_dim)
+        self.conv2 = nn.Conv1d(hidden_dim, hidden_dim, 2)
+        self.bn2 = nn.BatchNorm1d(hidden_dim)
+        self.transconv1 = nn.ConvTranspose1d(hidden_dim, hidden_dim, 2)
+        self.bn3 = nn.BatchNorm1d(hidden_dim)
+        self.transconv2 = nn.ConvTranspose1d(hidden_dim, hidden_dim, 2)
+
+        self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, dropout=dropout)
+
+    def forward(self, inputs, hidden_state, cell_state):
+        conv1_output = F.relu(self.bn1(self.conv1(inputs.transpose(1, 2))))
+        conv2_output = F.relu(self.bn2(self.conv2(conv1_output)))
+        conv3_output = F.relu(self.bn3(self.transconv1(conv2_output)))
+        conv4_output = F.relu(self.transconv2(conv3_output))
+
+        out, (hidden_state, cell_state) = self.lstm(conv4_output.transpose(1, 2), (hidden_state, cell_state))
+
+        outputs = self.output_layer(out)
+        return outputs, hidden_state, cell_state
+
+
+class LightningModelCNNLSTM(LightningModel):
+    def __init__(self, training_normalized_data, get_new_mp_from_data_func, scaler, batch_size, seq_length, input_dim, teacher_forcing=True, loss='rmse', is_matrix=False,
+                 only_mp_features=None, model_name='', weight_decay=1e-2, learning_rate=1e-3, config=default_config):
+        super(LightningModelCNNLSTM, self).__init__(training_normalized_data, get_new_mp_from_data_func, scaler,
+                                                    batch_size, seq_length, input_dim, teacher_forcing, loss, is_matrix,
+                                                    only_mp_features, model_name, weight_decay, learning_rate, config)
+        self.lstm_model = CNNLSTM(batch_size, seq_length, input_dim, config['hidden_dim'], dropout=config['dropout'])
 
 
 class LSTMAttention(nn.Module):
@@ -274,8 +316,8 @@ class LSTMAttention(nn.Module):
 
 class LightningModelAttention(LightningModel):
     def __init__(self, training_normalized_data, get_new_mp_from_data_func, scaler, batch_size, seq_length, input_dim, teacher_forcing=True, loss='rmse', is_matrix=False,
-                 only_mp_features=False, model_name='', hidden_dim=4, ff_dim=4, weight_decay=1e-2, dropout=0.5,
-                 learning_rate=1e-3):
+                 only_mp_features=False, model_name='', weight_decay=1e-2,
+                 learning_rate=1e-3, config=default_config):
         # because the second dimension is used as memory for the attention
 
         # try both TODO: remove
@@ -284,9 +326,10 @@ class LightningModelAttention(LightningModel):
 
         super(LightningModelAttention, self).__init__(training_normalized_data, get_new_mp_from_data_func, scaler, batch_size, seq_length, input_dim,
                                                       teacher_forcing, loss, is_matrix, only_mp_features, model_name,
-                                                      weight_decay=weight_decay, learning_rate=learning_rate)
+                                                      weight_decay=weight_decay, learning_rate=learning_rate, config=config)
         self.only_mp_features = only_mp_features
-        self.lstm_model = LSTMAttention(input_dim, seq_length, hidden_dim=hidden_dim, ff_dim=ff_dim, dropout=dropout)
+        self.lstm_model = LSTMAttention(input_dim, seq_length, hidden_dim=config['hidden_dim'],
+                                        ff_dim=config['ff_dim'], dropout=config['dropout'])
         self.model_name = model_name
 
     def on_train_epoch_start(self):
@@ -357,39 +400,23 @@ class LightningModelAttention(LightningModel):
 
         outputs, self.hidden_states, self.cell_states = self.lstm_model(x_inputs, memory_inputs, self.hidden_states,
                                                                         self.cell_states)
-        rmse_loss = self.losses['rmse'](outputs[:, -1:, :], y)
-        mae_loss = self.losses['mae'](outputs[:, -1:, :], y)
-        mape_loss = self.losses['mape'](outputs[:, -1:, :], y)
+
+        if self.validation_outputs is None:
+            self.validation_outputs = outputs[:, -1, :]
+            self.Ys = y[:, -1, :]
+        else:
+            self.validation_outputs = torch.cat([self.validation_outputs, outputs[:, -1, :]], 0)
+            self.Ys = torch.cat([self.Ys, y[:, -1, :]], 0)
+
 
         if self.is_matrix:
             self.validation_input = self.get_new_mp_from_data_func(self.validation_input,
                                                                    outputs.cpu().detach().numpy()[0, -1:])
 
-
-        if self.scaler is not None:
-            scaled_outputs = torch.Tensor(self.scaler.inverse_transform(outputs.cpu()))
-            scaled_y = torch.Tensor(self.scaler.inverse_transform(y.cpu()))
-            scaled_rmse_loss = self.losses['rmse'](scaled_outputs[:, -1:, :], scaled_y)
-            scaled_mae_loss = self.losses['mae'](scaled_outputs[:, -1:, :], scaled_y)
-            scaled_mape_loss = self.losses['mape'](scaled_outputs[:, -1:, :], scaled_y)
-
         self.hidden_states = self.hidden_states.detach()
         self.cell_states = self.cell_states.detach()
 
-        if self.scaler is not None:
-            self.current_test_loss['rmse'].append(scaled_rmse_loss.item())
-            self.current_test_loss['mae'].append(scaled_mae_loss.item())
-            self.current_test_loss['mape'].append(scaled_mape_loss.item())
+        rmse_loss = self.losses['rmse'](outputs[:, -1, :], y[:, -1, :])
+        self.log('rmse_test_loss', rmse_loss, on_epoch=True)
 
-            self.log('scaled_rmse_test_loss', scaled_rmse_loss.item(), prog_bar=True)
-            self.log('scaled_mae_test_loss', scaled_mae_loss.item(), prog_bar=True)
-            self.log('scaled_mape_test_loss', scaled_mape_loss.item(), prog_bar=True)
-        else:
-            self.current_test_loss['rmse'].append(rmse_loss.item())
-            self.current_test_loss['mae'].append(mae_loss.item())
-            self.current_test_loss['mape'].append(mape_loss.item())
-
-            self.log('rmse_test_loss', rmse_loss.item(), prog_bar=True)
-            self.log('mae_test_loss', mae_loss.item(), prog_bar=True)
-            self.log('mape_test_loss', mape_loss.item(), prog_bar=True)
 

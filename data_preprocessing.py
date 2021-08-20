@@ -5,7 +5,7 @@ from sklearn.preprocessing import StandardScaler
 
 
 def get_normalize_data(data_source):
-    df = pd.read_csv('Normalized-covid-forecast-01032021.csv')
+    df = pd.read_csv('covid-forecast.csv')
     numpy_data = df[data_source].values
     numpy_data = np.expand_dims(numpy_data, 1).astype(np.float32)
 
@@ -16,7 +16,7 @@ def get_normalize_data(data_source):
 
 
 def get_already_normalize_data(data_source):
-    df = pd.read_csv('Normalized-covid-forecast-01032021.csv')
+    df = pd.read_csv('normalized-covid-forecast.csv')
     numpy_data = df[data_source].values
     numpy_data = np.expand_dims(numpy_data, 1).astype(np.float32)
     scaler = None

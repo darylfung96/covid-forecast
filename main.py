@@ -2,18 +2,20 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 import random
 import os
 import pickle
-import optuna
-import json
-from optuna.integration import PyTorchLightningPruningCallback
+from ray.tune.integration.pytorch_lightning import TuneReportCallback
+import ray.tune as tune
+from ray.tune import CLIReporter
+from functools import partial
 
 
 from k_fold import RepHoldout
-# from data_preprocessing import get_matrix_normalize_data, get_normalize_data, get_mp_from_data, get_new_mp_from_data
-from data_preprocessing import get_matrix_already_normalize_data, get_already_normalize_data, get_mp_from_data, get_new_mp_from_data
-from lstm import LightningModel, LightningModelAttention
+from data_preprocessing import get_matrix_normalize_data, get_normalize_data, get_mp_from_data, get_new_mp_from_data
+# from data_preprocessing import get_matrix_already_normalize_data, get_already_normalize_data, get_mp_from_data, get_new_mp_from_data
+from lstm import LightningModel, LightningModelAttention, LightningModelCNNLSTM
 from dataset import ForecastDataset, TestingForecastDataset
 
 
@@ -29,11 +31,21 @@ window_size = 7
 device = 'cpu'
 
 # [raw, raw relative attention, raw matrix attention, raw attention]
-is_matrix_list = [False, True, True, False]
-is_relative_list = [False, True, False, False]
-is_combined_list = [False, False, False, False]
-is_only_mp_features = [False, False, False, False]
-is_model_type = ['lstm', 'attention', 'attention', 'attention']
+is_matrix_list = [False]  #[False, True, True, False]
+is_relative_list = [False]  #[False, True, False, False]
+is_combined_list = [False]  #[False, False, False, False]
+is_only_mp_features = [False]  #[False, False, False, False]
+is_model_type = ['lstm']  #['cnnlstm', 'attention', 'attention', 'attention']  # ['lstm', 'attention', 'attention', 'attention']
+# is_matrix_list = [True]
+# is_relative_list = [False]
+# is_combined_list = [False]
+# is_only_mp_features = [False]
+# is_model_type = ['attention']
+
+# k_fold = False  # if not k fold, then train the whole data and do prediction #TODO change back to True
+# find_optimal_param = True
+# prediction_only = False
+run_type = 'k_fold'
 
 for i in range(len(is_matrix_list)):
     is_matrix = is_matrix_list[i]
@@ -54,24 +66,22 @@ for i in range(len(is_matrix_list)):
     else:
         matrix_str = 'matrix relative'
 
-    attention_str = 'attention' if model_type == 'attention' else ''
     raw_str = '' if only_mp_features else 'raw'
 
-    # all_data_sources = [
-    #     'hospital admission-adj (percentage of new admissions that are covid)', 'confirmed cases', 'death cases'
-    # ]
     all_data_sources = [
-        'Normalized.Admission', 'Normalized.Confirmed', 'Normalized.Death'
+        'hospital admission-adj (percentage of new admissions that are covid)', 'confirmed cases', 'death cases'
     ]
-    model_dict = {'lstm': LightningModel, 'attention': LightningModelAttention}
-    k_fold = False  # if not k fold, then train the whole data and do prediction
-    prediction_only = True
+    # all_data_sources = [
+    #     'Normalized.Admission', 'Normalized.Confirmed', 'Normalized.Death'
+    # ]
+    model_dict = {'lstm': LightningModel, 'attention': LightningModelAttention, 'cnnlstm': LightningModelCNNLSTM}
     loss = 'rmse'
 
-    model_name = f'{loss} {raw_str} {matrix_str} {attention_str}'
+    model_name = f'{loss} {raw_str} {matrix_str} {model_type}'
     ### end of setting model name ###
 
     def make_predictions(data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, current_rep_holdout):
+        lightningModel.load_best_state_dict()
         lstm_model = lightningModel.lstm_model.to(device)
         lstm_model.eval()
         hidden_states, cell_states = lstm_model.init_hiddenlstm_state()
@@ -118,7 +128,7 @@ for i in range(len(is_matrix_list)):
         if is_matrix:
             predictions, ori_data = get_mp_from_data(predictions, all_other_scalers, window_size=window_size, is_relative=is_relative, is_combined=is_combined)
 
-        for i in range(152):
+        for i in range(88):
             predicted_data = predictions[-seq_length:]
             if only_mp_features:
                 current_predicted_data = predicted_data[:, 1:]
@@ -217,7 +227,7 @@ for i in range(len(is_matrix_list)):
             train_dataset = ForecastDataset(training_normalized_data, seq_length, only_mp_features=only_mp_features)
             test_dataset = TestingForecastDataset(testing_normalized_data, seq_length, only_mp_features=only_mp_features)
             train_data_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=False)
-            test_data_loader = DataLoader(test_dataset, batch_size=1, drop_last=False)
+            test_data_loader = DataLoader(test_dataset, batch_size=1, drop_last=False, shuffle=False)
 
             get_new_mp_from_data_func = lambda predictions, next_prediction: get_new_mp_from_data(predictions, next_prediction, all_other_scalers, window_size=window_size,
                                                                                                   is_relative=is_relative,
@@ -225,8 +235,8 @@ for i in range(len(is_matrix_list)):
             lightningModel = model_dict[model_type](training_normalized_data, get_new_mp_from_data_func, scaler, batch_size, seq_length, input_dim=train_dataset[0][0].shape[1],
                                             teacher_forcing=True, loss=loss, is_matrix=is_matrix,
                                                     only_mp_features=only_mp_features, model_name=current_model_name,
-                                                    hidden_dim=hidden_dim, ff_dim=ff_dim, weight_decay=weight_decay,
-                                                    dropout=dropout, learning_rate=learning_rate)
+                                                     weight_decay=weight_decay,
+                                                     learning_rate=learning_rate, config=trial)
 
             if device == 'cuda':
                 gpus = 1
@@ -242,8 +252,8 @@ for i in range(len(is_matrix_list)):
         # objective = np.mean(np.min(np.array(all_test_loss), 1))
         # return objective
 
-        dir = os.path.join('results', f'results - {loss}')
-        current_dir = os.path.join(dir, f'{raw_str} {matrix_str} {attention_str}')
+        dir = os.path.join('results', 'loss', f'results - {loss}')
+        current_dir = os.path.join(dir, f'{raw_str} {matrix_str} {model_type}')
         os.makedirs(current_dir, exist_ok=True)
 
         with open(os.path.join(current_dir,f'train_{data_source}'), 'wb') as f:
@@ -282,51 +292,118 @@ for i in range(len(is_matrix_list)):
                                                     only_mp_features=only_mp_features, model_name=current_model_name,
                                                     hidden_dim=hidden_dim, ff_dim=ff_dim, weight_decay=weight_decay,
                                                     dropout=dropout, learning_rate=learning_rate)
+
         trainer = pl.Trainer(max_epochs=200)
         trainer.fit(lightningModel, train_data_loader)
+
         make_predictions(data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, None)
+
+
+    def run_prediction_only(trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers):
+        get_new_mp_from_data_func = lambda predictions, next_prediction: get_new_mp_from_data(predictions,
+                                                                                              next_prediction,
+                                                                                              all_other_scalers,
+                                                                                              window_size=window_size,
+                                                                                              is_relative=is_relative,
+                                                                                              is_combined=is_combined)
+
+        dataset = ForecastDataset(normalized_data, seq_length, only_mp_features=only_mp_features)
+        for current_rep_holdout in range(1, 6):
+            current_model_name = f'{model_name}/{data_source}_holdout_{current_rep_holdout}'
+
+            lightningModel = model_dict[model_type](normalized_data, get_new_mp_from_data_func, scaler,
+                                                    batch_size, seq_length, input_dim=dataset[0][0].shape[1],
+                                                    teacher_forcing=True, loss=loss, is_matrix=is_matrix,
+                                                    only_mp_features=only_mp_features,
+                                                    model_name=current_model_name,
+                                                    hidden_dim=trial['hidden_dim'], ff_dim=trial['ff_dim'],
+                                                    weight_decay=trial['weight_decay'],
+                                                    dropout=trial['dropout'], learning_rate=trial['learning_rate'])
+            lightningModel.load(current_model_name)
+            make_predictions(data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers,
+                             lightningModel, current_rep_holdout)
+
+
+
+    def find_optimal_parameters(trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers):
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        random.seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        dropout = trial['dropout']
+        hidden_dim = trial['hidden_dim']
+        ff_dim = trial['ff_dim']
+        learning_rate = trial['learning_rate']
+        weight_decay = trial['weight_decay']
+
+        # create datasets
+        k_fold_normalized_data = RepHoldout(n_splits=1).split(normalized_data)
+        training_normalized_data = normalized_data[k_fold_normalized_data[0][0]]
+        testing_normalized_data = normalized_data[k_fold_normalized_data[0][1]]
+
+        current_model_name = f'{model_name}/{data_source}_all'
+
+        # create datasets
+        train_dataset = ForecastDataset(training_normalized_data, seq_length, only_mp_features=only_mp_features)
+        test_dataset = TestingForecastDataset(testing_normalized_data, seq_length, only_mp_features=only_mp_features)
+        train_data_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=False)
+        test_data_loader = DataLoader(test_dataset, batch_size=1, drop_last=False)
+
+        get_new_mp_from_data_func = lambda predictions, next_prediction: get_new_mp_from_data(predictions,
+                                                                                              next_prediction,
+                                                                                              all_other_scalers,
+                                                                                              window_size=window_size,
+                                                                                              is_relative=is_relative,
+                                                                                              is_combined=is_combined)
+
+        # for hyperparameter optimization
+        config = {
+            'hidden_dim': tune.choice([32, 64, 128]),
+            'dropout': tune.uniform(0.0, 1.0)
+        }
+        if model_type is 'attention':
+            config['ff_dim'] = tune.choice([8, 16, 32, 64])
+
+        def train_tune(config, epochs=200, gpus=0):
+            lightningModel = model_dict[model_type](training_normalized_data, get_new_mp_from_data_func, scaler,
+                                                    batch_size,
+                                                    seq_length, input_dim=train_dataset[0][0].shape[1],
+                                                    teacher_forcing=True, loss=loss, is_matrix=is_matrix,
+                                                    only_mp_features=only_mp_features, model_name=current_model_name,
+                                                    weight_decay=weight_decay,
+                                                    learning_rate=learning_rate, config=config)
+            callback = TuneReportCallback(metrics={'loss': 'scaled_rmse_test_loss'},
+                                          on='validation_end')
+            trainer = pl.Trainer(max_epochs=200, callbacks=[callback, EarlyStopping(monitor='scaled_rmse_test_loss',
+                                                                                     patience=5)])
+            trainer.fit(lightningModel, train_data_loader, test_data_loader)
+
+        reporter = CLIReporter(parameter_columns=list(config.keys()), metric_columns=['loss', 'training_iteration'])
+        tune.run(partial(train_tune, epochs=200), config=config, num_samples=10, progress_reporter=reporter)
+
+    run_type_dict = {'k_fold': k_fold_training,
+                'prediction_only': run_prediction_only, 'find_optimal_param': find_optimal_parameters}
 
 
     def main():
         for data_source in all_data_sources:
             if is_matrix:
-                data_source_normalized_data, normalized_data, columns, scaler, all_other_scalers, _ = get_matrix_already_normalize_data(data_source,
+                data_source_normalized_data, normalized_data, columns, scaler, all_other_scalers, _ = get_matrix_normalize_data(data_source,
                                                                                                                                 window_size=window_size,
                                                                                                is_relative=is_relative,
                                                                                                  is_combined=is_combined)
             else:
-                normalized_data, columns, scaler = get_already_normalize_data(data_source)
+                normalized_data, columns, scaler = get_normalize_data(data_source)
                 all_other_scalers = None
                 data_source_normalized_data = normalized_data
 
-            trial = {'dropout': 0.2, 'hidden_dim': 8, 'ff_dim': 8, 'learning_rate': 0.0004, 'weight_decay': 1e-5}
-            if k_fold:
-                # trial = {'dropout': 0.045, 'hidden_dim': 64, 'ff_dim': 80, 'learning_rate': 0.001, 'weight_decay': 0.001}
+            trial = {'dropout': 0.36, 'hidden_dim': 32, 'ff_dim': 16, 'learning_rate': 0.0004, 'weight_decay': 1e-5}
 
-                k_fold_training(trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers)
-
-            elif prediction_only:
-                get_new_mp_from_data_func = lambda predictions, next_prediction: get_new_mp_from_data(predictions,
-                                                                                                      next_prediction,
-                                                                                                      all_other_scalers,
-                                                                                                      window_size=window_size,
-                                                                                                      is_relative=is_relative,
-                                                                                                      is_combined=is_combined)
-
-                dataset = ForecastDataset(normalized_data, seq_length, only_mp_features=only_mp_features)
-                for current_rep_holdout in range(1, 6):
-                    current_model_name = f'{model_name}/{data_source}_holdout_{current_rep_holdout}'
-
-                    lightningModel = model_dict[model_type](normalized_data, get_new_mp_from_data_func, scaler,
-                                                            batch_size, seq_length, input_dim=dataset[0][0].shape[1],
-                                                            teacher_forcing=True, loss=loss, is_matrix=is_matrix,
-                                                            only_mp_features=only_mp_features,
-                                                            model_name=current_model_name,
-                                                            hidden_dim=trial['hidden_dim'], ff_dim=trial['ff_dim'], weight_decay=trial['weight_decay'],
-                                                            dropout=trial['dropout'], learning_rate=trial['learning_rate'])
-                    lightningModel.load(current_model_name)
-                    make_predictions(data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers, lightningModel, current_rep_holdout)
-            else:
-                whole_data_train(trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers)
+            run_type_dict[run_type](trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers)
 
     main()
+
+# more dataset
+# more performance metrics
+# report several parameters results
