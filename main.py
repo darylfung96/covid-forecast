@@ -31,11 +31,16 @@ window_size = 7
 device = 'cpu'
 
 # [raw, raw relative attention, raw matrix attention, raw attention]
-is_matrix_list = [False]  #[False, True, True, False]
-is_relative_list = [False]  #[False, True, False, False]
-is_combined_list = [False]  #[False, False, False, False]
-is_only_mp_features = [False]  #[False, False, False, False]
-is_model_type = ['lstm']  #['cnnlstm', 'attention', 'attention', 'attention']  # ['lstm', 'attention', 'attention', 'attention']
+is_matrix_list = [False, False, True, True, False]
+is_relative_list = [False, False, True, False, False]
+is_combined_list = [False, False, False, False, False]
+is_only_mp_features = [False, False, False, False, False]
+is_model_type = ['lstm', 'cnnlstm', 'attention', 'attention', 'attention']  # ['lstm', 'attention', 'attention', 'attention']
+
+hidden_dim_list = [32, 128, 128, 32, 32]
+dropout_list = [0.36, 0.07, 0.77, 0.85, 0.21]
+ff_dim_list = [0, 0, 16, 8, 8]
+
 # is_matrix_list = [True]
 # is_relative_list = [False]
 # is_combined_list = [False]
@@ -398,7 +403,7 @@ for i in range(len(is_matrix_list)):
                 all_other_scalers = None
                 data_source_normalized_data = normalized_data
 
-            trial = {'dropout': 0.36, 'hidden_dim': 32, 'ff_dim': 16, 'learning_rate': 0.0004, 'weight_decay': 1e-5}
+            trial = {'dropout': dropout_list[i], 'hidden_dim': hidden_dim_list[i], 'ff_dim': ff_dim_list[i], 'learning_rate': 0.0004, 'weight_decay': 1e-5}
 
             run_type_dict[run_type](trial, data_source, data_source_normalized_data, normalized_data, scaler, all_other_scalers)
 
