@@ -28,7 +28,7 @@ window_size = 7
 # is_combined = False
 # only_mp_features = False
 # model_type = 'attention'
-device = 'cuda'
+device = 'cpu'
 
 # [raw, raw relative attention, raw matrix attention, raw attention]
 is_matrix_list = [True]
@@ -37,9 +37,9 @@ is_combined_list = [False]
 is_only_mp_features = [False]
 is_model_type = ['attention']  # ['lstm', 'attention', 'attention', 'attention']
 
-hidden_dim_list = [32, 128, 128, 32, 32]
-dropout_list = [0.36, 0.07, 0.77, 0.85, 0.21]
-ff_dim_list = [0, 0, 16, 8, 8]
+hidden_dim_list = [32]
+dropout_list = [0.85]
+ff_dim_list = [8]
 
 # is_matrix_list = [True]
 # is_relative_list = [False]
