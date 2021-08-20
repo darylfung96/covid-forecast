@@ -31,11 +31,11 @@ window_size = 7
 device = 'cuda'
 
 # [raw, raw relative attention, raw matrix attention, raw attention]
-is_matrix_list = [False, False, True, True, False]
-is_relative_list = [False, False, True, False, False]
-is_combined_list = [False, False, False, False, False]
-is_only_mp_features = [False, False, False, False, False]
-is_model_type = ['lstm', 'cnnlstm', 'attention', 'attention', 'attention']  # ['lstm', 'attention', 'attention', 'attention']
+is_matrix_list = [True]
+is_relative_list = [False]
+is_combined_list = [False]
+is_only_mp_features = [False]
+is_model_type = ['attention']  # ['lstm', 'attention', 'attention', 'attention']
 
 hidden_dim_list = [32, 128, 128, 32, 32]
 dropout_list = [0.36, 0.07, 0.77, 0.85, 0.21]
