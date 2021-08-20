@@ -28,7 +28,7 @@ window_size = 7
 # is_combined = False
 # only_mp_features = False
 # model_type = 'attention'
-device = 'cpu'
+device = 'cuda'
 
 # [raw, raw relative attention, raw matrix attention, raw attention]
 is_matrix_list = [False, False, True, True, False]
