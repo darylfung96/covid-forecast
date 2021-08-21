@@ -31,14 +31,14 @@ window_size = 7
 device = 'cpu'
 
 # [raw, raw relative attention, raw matrix attention, raw attention]
-is_matrix_list = [True]
+is_matrix_list = [False]
 is_relative_list = [False]
 is_combined_list = [False]
 is_only_mp_features = [False]
 is_model_type = ['attention']  # ['lstm', 'attention', 'attention', 'attention']
 
 hidden_dim_list = [32]
-dropout_list = [0.85]
+dropout_list = [0.21]
 ff_dim_list = [8]
 
 # is_matrix_list = [True]

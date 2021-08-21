@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler
 
 
 is_plot = False
-type = 'loss'  # loss or prediction or mp
+type = 'prediction'  # loss or prediction or mp
 loss_type = 'rmse'
 # dir = os.path.join('results', 'prediction', '6 months')
 
