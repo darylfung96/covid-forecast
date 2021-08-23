@@ -1,4 +1,6 @@
-# Getting Started
+#A novel matrix profile-guided attention LSTM model for forecasting COVID-19 cases in USA
+
+## Getting Started
 
 ### Getting Data
 Run:
