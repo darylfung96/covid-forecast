@@ -1,4 +1,4 @@
-#A novel matrix profile-guided attention LSTM model for forecasting COVID-19 cases in USA
+# A novel matrix profile-guided attention LSTM model for forecasting COVID-19 cases in USA
 
 ## Getting Started
 
